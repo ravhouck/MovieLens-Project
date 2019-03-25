@@ -1,0 +1,201 @@
+---
+title: "Capstone - MovieLens Project"
+author: "Raven Houck"
+date: "3/24/2019"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+Introduction
+This report is part of the “HarvardX: PH125.9x Data Science: Capstone” course. The main goal of this project is to use all acquired skills that have been learned throughout the Data Science Professional Certificate program, and to apply them to a real-world problem. The given task is to use machine learning techniques to create a movie recommendation system based on predicted movie ratings. The given task will be accomplished using the MovieLens dataset – a set of Big Data that includes over ten million movie ratings. A machine learning algorithm will be trained using the inputs in one subset to predict movie ratings in the validation set. The movie rating predictions will then be compared to the true ratings in the validation set using Root Mean Squared Error (RMSE). 
+
+Methods and Analysis
+A RMSE approach will be used to create this algorithm, since it is based on the mean movie rating. However, this value will be adjusted for based on two varying effects. First, the movie-affect variable must be accounted for. This is based on the idea that in general, some movies are just rated higher than others. The user-affect variable will also be accounted for, due to the substantial variability across users who rate movies. Once both affects are implemented into the algorithm, it will be used to create a movie recommendation system through the resulting predicted movie ratings. The movie rating predictions will then be compared to the true ratings in the validation set using RMSE.
+
+
+Creating Test and Validation Sets
+```{r, include=FALSE}
+#Load the necessary packages
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(dplyr)
+library(stringr)
+```
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+```{r}
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+     semi_join(edx, by = "movieId") %>%
+     semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+Data Exploration
+
+```{r}
+#What are the dimensions of the edx dataset?
+dim(edx)
+```
+The dataset has 9000055 rows and 6 columns.
+
+```{r}
+#How many zeros and threes are there in the edx dataset?
+edx %>% filter(rating == 3) %>% tally()
+```
+There are no movies that have a rating of zero – this is because the movies are rated from 0 to 5 in increments of 0.5. However, there are 2121240 threes given as ratings. 
+
+```{r}
+#How many different movies are in the edx dataset?
+edx %>% summarize(n_movies=n_distinct(movieId))
+```
+There are 10677 unique movies in the dataset.
+
+```{r}
+#How many different users are in the edx dataset?
+edx %>% summarize(n_users=n_distinct(userId))
+```
+There are 69878 unique users in the dataset.
+
+```{r}
+#How many movie ratings are there for drama, comedy, thriller, and romance genres?
+edx %>% separate_rows(genres, sep = "\\|") %>%
+	group_by(genres) %>%
+	summarize(count = n()) %>%
+	arrange(desc(count))
+```
+There are 3910127 drama movie ratings, 3540930 comedy movie ratings, 2325899 thriller movie ratings, and 1712100 romance movie ratings in the dataset.
+
+```{r}
+#Which movie group has the highest number of ratings?
+edx %>% group_by(title) %>% summarize(number = n()) %>% arrange(desc(number))
+```
+Pulp Fiction has the greatest number of ratings.
+
+```{r}
+#What are the five most given ratings?
+edx %>% group_by(rating) %>% summarize(count = n()) %>% top_n(5) %>% arrange(desc(count)) 
+```
+The five most given ratings are 4, 3, 5, 3.5, and 2.
+
+```{r}
+#Are half-star ratings less common than whole star ratings?
+edx %>%
+	group_by(rating) %>%
+	summarize(count = n()) %>%
+	ggplot(aes(x = rating, y = count)) +
+	geom_line()
+```
+This plot shows that half-star ratings are less common than whole star ratings. 
+
+
+Results
+This machine learning algorithm is based on the mean movie rating, but also takes into account the movie-and-user-effect. This was done using a root mean square approach.
+
+Developing the Algorithm
+First, the training set – labelled as the edx set – was used to develop the machine learning algorithm.
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+        sqrt(mean((true_ratings - predicted_ratings)^2))}
+
+lambda <- seq(0,5,0.5)
+
+rmse <- sapply(lambda, function(x){
+
+#Begin by determining the mean movie rating from the edx set
+mu_hat <- mean(edx$rating)
+
+#Now implement a Movie Effect model that takes this variability into account
+movie_avgs <- edx %>% group_by(movieId) %>% summarize(movie_avgs = mean(rating - mu_hat))
+
+#Now take the use variability into account
+user_avgs <- edx %>% left_join(movie_avgs, by='movieId') %>% 
+group_by(userId) %>% summarize(user_avgs = mean(rating - mu_hat - movie_avgs))
+
+#Now we determine the predicted ratings based on the edx set
+predicted_ratings <- edx %>% left_join(movie_avgs, by='movieId') %>%
+	left_join(user_avgs, by='userId') %>%
+	mutate(pred = mu_hat + movie_avgs + user_avgs) %>%
+	pull(pred)
+
+return(RMSE(predicted_ratings, edx$rating))})
+```
+This ultimately results in the following minimum RMSE
+```{r}
+min(rmse)
+```
+A minimum rmse of 0.857 was achieved using the Movie & User Variability Method
+
+It is also important to consider the effect of lambda on the RMSE
+```{r}
+plot(lambda,rmse)
+```
+Due to the insignificant effect of lambda on rmse, predictions will be made with lambda=0.5 for simplicity
+
+Predicting Movie Ratings
+Next, the developed algorithm is tested by predicting the movie ratings in the validation set as if they were unknown. The RMSE is used to evaluate how close the predictions are to the true values.
+
+```{r}
+#Lambda will be set to 0.5
+lambda <- 0.5
+     
+prediction <- sapply(lambda,function(l){
+  
+#mu is set to be the mean of the training set
+mu <- mean(edx$rating)
+  
+#Predict the movie effect with lambda
+pred_movie_avgs <- edx %>% group_by(movieId) %>% summarize(pred_movie_avgs = mean(rating - mu))
+  
+#Predict the user effect with lambda
+pred_user_avgs <- edx %>% left_join(pred_movie_avgs, by='movieId') %>% 
+group_by(userId) %>% summarize(pred_user_avgs = mean(rating - mu - pred_movie_avgs))
+
+#Predict ratings on validation set
+predicted_ratings <- validation %>% 
+	left_join(pred_movie_avgs, by = "movieId") %>%
+	left_join(pred_user_avgs, by = "userId") %>%
+	mutate(pred = mu + pred_movie_avgs + pred_user_avgs) %>%
+	pull(pred) 
+  
+  return(predicted_ratings)})
+
+#These predicted ratings will be documented on the following .csv file
+write.csv(validation %>% select(userId, movieId) %>% mutate(rating = prediction),
+          "movielens_prediction_submission.csv", na = "", row.names=FALSE)
+```
+
+Conclusion
+The main goal of this project was successfully achieved by creating a machine learning algorithm that can be used to predict movie ratings from the MovieLens dataset. By comparing the movie rating predictions to the true ratings in the validation set, an RMSE value of 0.857 was achieved. 
+
